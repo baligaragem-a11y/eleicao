@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CandidateResult, ElectionResult, FonteDados, PaisResumo } from '../types/tse';
 import { formatNumber, formatPercent, formatHora, tempoRelativo } from '../utils/format';
 import { withAlpha } from '../theme';
@@ -27,6 +27,64 @@ function SplitBar({ a, b, height = 8, dark = false }: { a: number; b: number; he
       <div className="h-full transition-[width] duration-700 ease-out" style={{ width: `${(a / total) * 100}%`, background: dark ? '#f0655f' : '#c0392b' }} />
       <div className="h-full transition-[width] duration-700 ease-out" style={{ width: `${(b / total) * 100}%`, background: dark ? '#7fb2f0' : '#2f6fb5' }} />
       <span className="absolute top-1/2 h-[150%] w-px -translate-x-1/2 -translate-y-1/2" style={{ left: '50%', background: dark ? 'rgba(255,255,255,.4)' : 'rgba(21,37,31,.28)' }} />
+    </div>
+  );
+}
+
+// Cabo de força com lupa: recorte ampliado em torno dos 50% para disputas apertadas
+const LUPA_FAIXAS = [0.5, 1, 2, 5, 10, 25];
+const LUPA_ESQ = 27;
+const LUPA_DIR = 73;
+
+function ZoomSplitBar({ a, b }: { a: number; b: number }) {
+  const total = Math.max(a + b, 0.0001);
+  const share = (a / total) * 100;
+  // menor janela que ainda mostra a divisão com folga
+  const meia = LUPA_FAIXAS.find(f => Math.abs(share - 50) * 1.3 <= f) ?? 50;
+  const ini = 50 - meia;
+  const fim = 50 + meia;
+  const pos = Math.min(Math.max(((share - ini) / (fim - ini)) * 100, 0), 100);
+  const zoom = Math.round((LUPA_DIR - LUPA_ESQ) / (2 * meia));
+  const casas = meia < 1 ? 1 : 0;
+  const vermelho = '#f0655f';
+  const azul = '#7fb2f0';
+
+  return (
+    <div>
+      {/* lupa */}
+      <div className="relative mx-auto" style={{ width: `${LUPA_DIR - LUPA_ESQ}%` }}>
+        <div className="mono mb-1 flex items-center justify-between text-[8.5px] uppercase tracking-[0.1em] text-[#8fb4a5]">
+          <span>lupa no centro</span>
+          <span className="rounded bg-white/10 px-1.5 py-[1px] text-[#cfe7dc]">zoom {zoom}×</span>
+        </div>
+        <div className="relative overflow-hidden rounded-md border border-white/40 shadow-[0_6px_18px_-8px_rgba(0,0,0,.6)]" style={{ height: 26 }}>
+          <div className="absolute inset-y-0 left-0 transition-[width] duration-700 ease-out" style={{ width: `${pos}%`, background: vermelho }} />
+          <div className="absolute inset-y-0 right-0 transition-[width] duration-700 ease-out" style={{ width: `${100 - pos}%`, background: azul }} />
+          {[25, 75].map(t => (
+            <span key={t} className="absolute bottom-0 h-1.5 w-px bg-black/25" style={{ left: `${t}%` }} />
+          ))}
+          <span className="absolute inset-y-0 w-[2px] -translate-x-1/2 bg-white/85" style={{ left: '50%' }} />
+          <span className="absolute inset-y-[-2px] w-[3px] -translate-x-1/2 rounded-full bg-[#0d2b23] transition-[left] duration-700 ease-out" style={{ left: `${pos}%` }} />
+        </div>
+        <div className="mono mt-0.5 flex justify-between text-[8.5px] text-[#7f9c92] tnum">
+          <span>{formatPercent(ini, casas)}</span>
+          <span className="text-[#cfe7dc]">50%</span>
+          <span>{formatPercent(fim, casas)}</span>
+        </div>
+      </div>
+
+      {/* linhas ligando a lupa ao recorte na barra */}
+      <svg className="block w-full" height="14" viewBox="0 0 100 14" preserveAspectRatio="none" aria-hidden>
+        <line x1={LUPA_ESQ} y1="0" x2={ini} y2="14" stroke="rgba(255,255,255,.35)" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+        <line x1={LUPA_DIR} y1="0" x2={fim} y2="14" stroke="rgba(255,255,255,.35)" strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />
+      </svg>
+
+      {/* barra inteira com o recorte marcado */}
+      <div className="relative">
+        <SplitBar a={a} b={b} dark />
+        <span className="pointer-events-none absolute top-1/2 h-[220%] -translate-y-1/2 rounded-[3px] border border-white/80 bg-white/10"
+          style={{ left: `${ini}%`, width: `${fim - ini}%` }} />
+      </div>
     </div>
   );
 }
@@ -148,6 +206,25 @@ export function Hero({
   useEffect(() => { const t = setInterval(() => tick(v => v + 1), 1000); return () => clearInterval(t); }, []);
   const previa = fonte === 'boletim';
   const cands = [...(placar?.candidatos || []).slice(0, 2)].sort((a, b) => a.numero - b.numero);
+  // Cartões ordenados por votos: quem está na frente fica em cima
+  const ranking = [...cands].sort((a, b) => b.votos - a.votos);
+  const ordemRanking = ranking.map(c => c.numero).join(',');
+  const cardRefs = useRef(new Map<number, HTMLDivElement>());
+  const posAnterior = useRef(new Map<number, number>());
+  // Anima a troca de posição (o líder sobe, o outro desce)
+  useLayoutEffect(() => {
+    cardRefs.current.forEach((el, numero) => {
+      const top = el.offsetTop;
+      const antes = posAnterior.current.get(numero);
+      if (antes !== undefined && antes !== top) {
+        el.animate(
+          [{ transform: `translateY(${antes - top}px)` }, { transform: 'translateY(0)' }],
+          { duration: 650, easing: 'cubic-bezier(.2,.8,.2,1)' },
+        );
+      }
+      posAnterior.current.set(numero, top);
+    });
+  }, [ordemRanking]);
   const validos = placar?.votosValidos || 0;
   const comVotos = paises.filter(p => p.votosValidos > 0).length;
   const margem = cands.length >= 2 ? Math.abs(cands[0].percentual - cands[1].percentual) : 0;
@@ -216,18 +293,28 @@ export function Hero({
           )}
 
           <div className="mt-4 space-y-3">
-            {cands.map(c => {
+            {ranking.map((c, i) => {
               const outro = cands.find(x => x.numero !== c.numero);
               const diff = outro ? c.votos - outro.votos : 0;
+              const lider = i === 0 && diff > 0;
               return (
-                <div key={c.numero} className="rounded-xl border border-white/10 bg-white/[0.045] p-3.5 transition-colors hover:bg-white/[0.07]">
+                <div key={c.numero}
+                  ref={el => { if (el) cardRefs.current.set(c.numero, el); else cardRefs.current.delete(c.numero); }}
+                  className="rounded-xl border border-white/10 bg-white/[0.045] p-3.5 transition-colors hover:bg-white/[0.07]">
                   <div className="flex items-center gap-3">
                     <span className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold"
                       style={{ background: withAlpha(c.cor, 0.22), color: '#f4f1ea', border: `1px solid ${withAlpha(c.cor, 0.5)}` }}>
                       {initials(c.nomeUrna)}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-[14px] font-bold">{c.nomeUrna}</p>
+                      <p className="flex items-center gap-2 truncate text-[14px] font-bold">
+                        {c.nomeUrna}
+                        {lider && (
+                          <span className="mono rounded-full bg-[#2fbf8a]/20 px-1.5 py-[2px] text-[8.5px] font-medium uppercase tracking-[0.1em] text-[#8ff0c6]">
+                            na frente
+                          </span>
+                        )}
+                      </p>
                       <p className="mono truncate text-[9.5px] uppercase tracking-[0.09em] text-[#8fb4a5]">{c.partido} · nº {c.numero}</p>
                     </div>
                     <div className="text-right">
@@ -256,9 +343,9 @@ export function Hero({
 
           {cands.length >= 2 && validos > 0 && (
             <>
-              <div className="mt-4"><SplitBar a={cands[0].percentual} b={cands[1].percentual} dark /></div>
-              <div className="mono mt-1.5 flex items-center justify-between text-[9px] uppercase tracking-[0.1em] text-[#8fb4a5]">
-                <span>barra dividida (referência)</span><span>50%</span>
+              <div className="mt-4"><ZoomSplitBar a={cands[0].percentual} b={cands[1].percentual} /></div>
+              <div className="mono mt-2 flex items-center justify-between text-[9px] uppercase tracking-[0.1em] text-[#8fb4a5]">
+                <span>barra dividida (referência)</span><span>0 — 50% — 100%</span>
               </div>
             </>
           )}
