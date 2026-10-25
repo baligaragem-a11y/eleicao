@@ -1,0 +1,21 @@
+# dependências e build (o GitHub Actions gera o dist/ na hora de publicar)
+node_modules/
+dist/
+
+# logs e caches
+*.log
+npm-debug.log*
+.vite/
+.wrangler/
+.tmp-tests/
+
+# ambiente/segredos (nunca suba chaves)
+.env
+.env.*
+.dev.vars
+
+# sistema/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
